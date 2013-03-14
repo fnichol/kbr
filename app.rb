@@ -11,7 +11,7 @@ module KBR
   class GitHubClient
 
     def initialize(opts = {})
-      @connection = Faraday.new(url: 'https://api.github.com') do |builder|
+      @connection = Faraday.new(url: opts[:api_url]) do |builder|
         builder.response :json, content_type: /\bjson$/
         builder.use :http_cache, *opts[:cache_opts]
         builder.adapter Faraday.default_adapter
@@ -31,6 +31,7 @@ module KBR
     configure do
       enable :logging
       set :redis_url, (ENV['REDIS_URL'] || "redis://127.0.0.1:6379")
+      set :gh_api_url, (ENV['GITHUB_API_URL'] || "https://api.github.com")
       set :gh_client_id, ENV['GITHUB_CLIENT_ID']
       set :gh_client_secret, ENV['GITHUB_CLIENT_SECRET']
     end
@@ -38,21 +39,29 @@ module KBR
     get '/tags/:user/:repo' do
       content_type :json
       response = github_client.tags(params[:user], params[:repo])
-      return response.status unless response.success?
-
-      tags = response.body.map { |t| t["ref"].split("/").last }.sort
-      logger.info [
+      stats = [
         "repo=#{params[:user]}/#{params[:repo]}",
+        "status=#{response.status}",
         "rate_limit=#{rate_limit(response.headers)}",
-        "tags=#{tags.join(",")}",
       ].join(" ")
-      tags.to_json
+
+      if response.success?
+        tags = response.body.map { |t| t["ref"].split("/").last }.sort
+        stats << " tags=#{tags.join(",")}"
+        logger.info stats
+        tags.to_json
+      else
+        logger.warn stats
+        response.status
+      end
+
     end
 
     private
 
     def github_client
       GitHubClient.new(
+        api_url: settings.gh_api_url,
         client_id: settings.gh_client_id,
         client_secret: settings.gh_client_secret,
         cache_opts: [
